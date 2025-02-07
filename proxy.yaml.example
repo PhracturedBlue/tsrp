@@ -1,0 +1,11 @@
+- hostname: service1
+  origin: http://localhost:8080
+
+- hostname: service2
+  origin: unix:/path/to/unix/domain/socket
+  http: false  # Never expose via https
+
+- hostname: transparent_service
+  origin: https://localhost:8443
+  https: true
+  transparent: true

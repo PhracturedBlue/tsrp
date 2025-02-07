@@ -1,0 +1,4 @@
+.env
+tsrp
+*.sw[op]
+proxy.yaml
