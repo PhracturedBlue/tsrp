@@ -175,7 +175,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
 
 	stateDir := filepath.Join(*configStateDir, proxy.Hostname)
 	err = os.MkdirAll(stateDir, 0700)
-		
+
 	if err != nil {
 		log.Fatalf("can't make proxy state directory: %v", err)
 	}
@@ -206,7 +206,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
 			log.Fatal(err)
 		}
 		defer listener.Close()
-		log.Printf("Setting up transparent proxy for %s", proxy.Hostname)
+		log.Printf("Setting up transparent proxy for %s on port %s", proxy.Hostname, port)
 		transparentProxy(listener, originServerURL)
 		return nil
 	}
@@ -271,6 +271,9 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 		}
 		hostname := strings.Split(path.Base(path.Dir(filename)), ".")[0]
 		if s.Mode().Type() == fs.ModeSocket {
+			_, ok := proxies[hostname]
+			if ok { continue }
+
 			if slices.Contains(configIgnore, hostname) {
 				log.Printf("Ignoring %s\n", hostname)
 				continue
@@ -302,17 +305,21 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 						log.Printf("Failed to parse %v: %v", ovrd_file, err)
 					} else {
 						if val, ok := m["name"]; ok {
+							log.Printf("%v sets hostname=%s", ovrd_file, val)
 							proxy.Hostname = val
 						}
 						if val, ok := m["mode"]; ok  && val == "grpcs" {
+							log.Printf("%v sets transparent=true, https=true\n", ovrd_file)
 							proxy.Transparent = true
 							proxy.Https = true
 						}
 						if val, ok := m["https"]; ok {
 							proxy.Https = val == "true"
+							log.Printf("%v sets https=%t\n", ovrd_file, proxy.Https)
 						}
 						if val, ok := m["transparent"]; ok {
 							proxy.Transparent = val == "true"
+							log.Printf("%v sets transparent=%t\n", ovrd_file, proxy.Transparent)
 						}
 					}
 				}
@@ -329,10 +336,12 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 	for hostname, srvrs := range proxies {
 		_, ok := seen[hostname]
 		if (! ok) {
+			log.Printf("Shutting down http server %s\n", hostname)
 			if err := srvrs.server.Shutdown(context.Background()); err != nil {
 				    log.Printf("Server shutdown error: %v\n", err)
 			}
 			if srvrs.serverTLS != nil {
+				log.Printf("Shutting down https server %s\n", hostname)
 				if err = srvrs.serverTLS.Shutdown(context.Background()); err != nil {
 					    log.Printf("TLS Server shutdown error: %v\n", err)
 				}
@@ -340,7 +349,6 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 			delete(proxies, hostname)
 		}
 	}
-	
 }
 
 func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
