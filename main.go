@@ -25,6 +25,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/rjeczalik/notify"
 	"tailscale.com/tsnet"
+	"tailscale.com/client/local"
 )
 
 var (
@@ -71,6 +72,10 @@ type ProxyPair struct {
 	serverTLS *http.Server
 }
 
+type NetworkMonitor struct {
+	Client *local.Client
+	Alive  bool
+}
 
 func parseProxies(configPath string) []ProxyConfig {
 	var proxies []ProxyConfig
@@ -163,7 +168,7 @@ func transparentProxy(listener net.Listener, url *url.URL) {
 
 }
 
-func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
+func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonitor) error {
 	defer wg.Done()
 	if (proxy.server == nil) {
 		proxy.server = &http.Server{}
@@ -191,6 +196,15 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
 	} else {
 		server.Logf = nil
 	}
+
+	lc, err := server.LocalClient()
+	if err != nil {
+		log.Fatal(err)
+	}
+	netmon <- NetworkMonitor{Client: lc, Alive: true}
+	defer func() {
+		netmon <- NetworkMonitor{Client: lc, Alive: false}
+	}()
 
 	port := ":80"
 	portTLS := ":443"
@@ -234,7 +248,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
 			defer wg.Done()
 			err := proxy.serverTLS.Serve(listenerTLS)
 			if err != nil {
-				log.Printf("Error serving proxy for %s: %v", proxy.Hostname, err)
+				log.Printf("Error serving https proxy for %s: %v", proxy.Hostname, err)
 			}
 		}()
 	}
@@ -244,6 +258,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
 		log.Fatal(err)
 	}
 	defer listener.Close()
+
 	proxy.server.Handler = reverseProxy
 	log.Printf("Serving http on %s -> %s://%s", proxy.Hostname, originServerURL.Scheme, originServerURL.Path)
 	err = proxy.server.Serve(listener)
@@ -253,7 +268,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig) error {
 	return err
 }
 
-func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
+func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor) {
 	log.Println("Scanning...")
 	defer log.Println("Scanning complete")
 	permissions := *configSocketPerm
@@ -272,7 +287,10 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 		hostname := strings.Split(path.Base(path.Dir(filename)), ".")[0]
 		if s.Mode().Type() == fs.ModeSocket {
 			_, ok := proxies[hostname]
-			if ok { continue }
+			if ok {
+				seen[hostname] = true
+				continue
+			}
 
 			if slices.Contains(configIgnore, hostname) {
 				log.Printf("Ignoring %s\n", hostname)
@@ -330,7 +348,7 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 			}
 			seen[hostname] = true
 			wg.Add(1)
-			go createProxy(wg, proxy)
+			go createProxy(wg, proxy, netmon)
 		}
 	}
 	for hostname, srvrs := range proxies {
@@ -351,15 +369,75 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
 	}
 }
 
-func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair) {
+func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor) {
 	for _ = range ch {
 		time.Sleep(time.Duration(delay) * time.Second)
-		// Clear channel if there were any signals while sleeping
-		select {
-		case _ = <- ch:
-		default:
+		Loop:
+		for {
+			// Clear channel if there were any signals while sleeping
+			select {
+			case _ = <- ch:
+			default:
+				break Loop
+			}
 		}
-		ScanSockets(wg, proxies)
+		ScanSockets(wg, proxies, netmon)
+	}
+}
+
+func networkMonitor(netmon chan NetworkMonitor) {
+	clients := make(map[*local.Client]string)
+	starting := make(map[*local.Client]time.Time)
+	for {
+		select {
+		case nm := <- netmon:
+			if nm.Alive {
+				// Could also use status->CertDomains here
+				prefs, err := nm.Client.GetPrefs(context.Background())
+				if err != nil {
+					log.Printf("Failed to get preferences for client.  Ignoring")
+					continue
+				}
+				clients[nm.Client] = prefs.Hostname
+				log.Printf("Monitoring client: %s", prefs.Hostname)
+				starting[nm.Client] = time.Now().Add(30 * time.Second)
+			} else {
+				if host, ok := clients[nm.Client]; ok {
+					log.Printf("Removing %s from network monitoring", host)
+					delete(clients, nm.Client)
+				}
+			}
+		case <-time.After(5 * time.Minute): // empty
+		}
+		log.Printf("Starting netmon loop")
+		for client, name := range clients {
+			status, err := client.StatusWithoutPeers(context.Background())
+			if err != nil {
+				log.Printf("Failed to get status for %s: %s", name, err)
+				continue
+			}
+			unhealthy := []string{}
+			start, ok := starting[client]
+			if ok {
+				if time.Now().After(start) {
+					delete(starting, client)
+				} else if status.BackendState == "Starting" || status.BackendState == "NoState" {
+					continue
+				}
+			}
+			if status.BackendState != "Running" {
+				unhealthy = append(unhealthy, fmt.Sprintf("state = %s", status.BackendState))
+			}
+			for _, state := range status.Health {
+				if strings.Contains(state, "getting OS base config is not supported") {
+					continue
+				}
+				unhealthy = append(unhealthy, state)
+			}
+			if len(unhealthy) != 0 {
+				log.Printf("%s is unhealthy: %s", name, strings.Join(unhealthy, ", "))
+			}
+		}
 	}
 }
 
@@ -387,6 +465,7 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
+	netmon := make(chan NetworkMonitor, 20)
 
 	if (*configProxyFile != "") {
 		proxies := parseProxies(*configProxyFile)
@@ -396,7 +475,7 @@ func main() {
 				continue
 			}
 			wg.Add(1)
-			go createProxy(&wg, proxy)
+			go createProxy(&wg, proxy, netmon)
 		}
 	}
 
@@ -408,7 +487,8 @@ func main() {
 				Origin: *configAddress,
 				Transparent: *configTransparent,
 				Https: *configHTTPS,
-				})
+				},
+				netmon)
 		}()
 	}
 	if (*configSocketDir != "") {
@@ -418,17 +498,21 @@ func main() {
 			log.Fatalf("Failed to create inotify watcher fro %v: %v", path, err)
 		}
 		defer notify.Stop(c)
-		ScanSockets(&wg, socketproxies) // scan once to find existing sockets
+		ScanSockets(&wg, socketproxies, netmon) // scan once to find existing sockets
 		scanch := make(chan bool, 1)
-		go ScanMonitor(scanch, &wg, socketproxies)
-		for ei := range c {
-			log.Println("received", ei)
-			select {
-			case scanch <- true: // indicate a change
-			default:  // a change is already indicated, no need to duplicate
+		go ScanMonitor(scanch, &wg, socketproxies, netmon)
+		go func() {
+			for ei := range c {
+				log.Println("received", ei)
+				select {
+				case scanch <- true: // indicate a change
+				default:  // a change is already indicated, no need to duplicate
+				}
 			}
-		}
+		}()
 	}
+
+	go networkMonitor(netmon)
 
 	wg.Wait()
 }
