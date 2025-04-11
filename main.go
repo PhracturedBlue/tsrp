@@ -14,18 +14,18 @@ import (
 	"sync"
 	"time"
 
+	"crypto/tls"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"crypto/tls"
 
 	"github.com/goccy/go-yaml"
 	"github.com/joho/godotenv"
 	"github.com/rjeczalik/notify"
-	"tailscale.com/tsnet"
 	"tailscale.com/client/local"
+	"tailscale.com/tsnet"
 )
 
 var (
@@ -38,8 +38,8 @@ var (
 	configSocketPerm  = flag.Int("socketperm", -1, "override socket permissions")
 	configHTTPS       = flag.Bool("https", false, "Enable HTTPS endpoints for each HTTP endpoint")
 	configVerbose     = flag.Bool("verbose", false, "if set, verbosely log tsnet information")
-	configIgnore        arrayFlags
-	delay         int = 5
+	configIgnore      arrayFlags
+	delay             int = 5
 )
 
 type arrayFlags []string
@@ -54,12 +54,12 @@ func (i *arrayFlags) Set(value string) error {
 }
 
 type ProxyConfig struct {
-	server *http.Server
-	serverTLS *http.Server
-	Hostname string
-	Origin string
+	server      *http.Server
+	serverTLS   *http.Server
+	Hostname    string
+	Origin      string
 	Transparent bool
-	Https bool
+	Https       bool
 }
 
 func (i *ProxyConfig) unmarshalWithDefaults(b []byte) error {
@@ -68,7 +68,7 @@ func (i *ProxyConfig) unmarshalWithDefaults(b []byte) error {
 }
 
 type ProxyPair struct {
-	server *http.Server
+	server    *http.Server
 	serverTLS *http.Server
 }
 
@@ -81,7 +81,7 @@ func parseProxies(configPath string) []ProxyConfig {
 	var proxies []ProxyConfig
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-	        log.Fatalf("Failed to read config file: %v", err)
+		log.Fatalf("Failed to read config file: %v", err)
 	}
 	err = yaml.UnmarshalWithOptions(data, &proxies, yaml.CustomUnmarshaler((*ProxyConfig).unmarshalWithDefaults))
 	if err != nil {
@@ -93,14 +93,14 @@ func udsReverseProxy(url *url.URL) (udsProxy *httputil.ReverseProxy) {
 	uds := url.Path
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			if (req.URL.Scheme == "") {
+			if req.URL.Scheme == "" {
 				req.URL.Scheme = "http"
 			}
 			req.URL.Scheme = "http"
 			req.Proto = "HTTP/1.1"
 			req.ProtoMajor = 1
 			req.ProtoMinor = 1
-			req.URL.Host = "unix"    // Placeholder, not used for Unix sockets
+			req.URL.Host = "unix" // Placeholder, not used for Unix sockets
 			//req.URL.Path = "" // Path to your Unix socket
 			req.Header.Set("X-Real-IP", req.RemoteAddr)
 			req.Header.Set("X-Original-URI", strings.Split(req.RequestURI, ":")[0])
@@ -116,7 +116,7 @@ func udsReverseProxy(url *url.URL) (udsProxy *httputil.ReverseProxy) {
 	return proxy
 }
 
-func hasScheme(url *url.URL, scheme string)bool {
+func hasScheme(url *url.URL, scheme string) bool {
 	schemes := strings.Split(url.Scheme, "+")
 	for _, item := range schemes {
 		if scheme == item {
@@ -132,13 +132,13 @@ func fileExists(path string) bool {
 }
 
 func transparentProxy(listener net.Listener, url *url.URL) {
-	copyData := func (src, dst net.Conn) {
+	copyData := func(src, dst net.Conn) {
 		_, err := io.Copy(dst, src)
 		if err != nil {
 			log.Fatalf("Error copying data:", err)
 		}
 	}
-	handleConnection := func (clientConn net.Conn) {
+	handleConnection := func(clientConn net.Conn) {
 		scheme := "tcp"
 		addr := url.String()
 		if hasScheme(url, "unix") {
@@ -170,7 +170,7 @@ func transparentProxy(listener net.Listener, url *url.URL) {
 
 func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonitor) error {
 	defer wg.Done()
-	if (proxy.server == nil) {
+	if proxy.server == nil {
 		proxy.server = &http.Server{}
 	}
 	originServerURL, err := url.Parse(proxy.Origin)
@@ -187,7 +187,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonit
 
 	server := &tsnet.Server{
 		Hostname: proxy.Hostname,
-		Dir: stateDir,
+		Dir:      stateDir,
 	}
 
 	defer server.Close()
@@ -233,7 +233,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonit
 	}
 
 	if proxy.Https {
-		if (proxy.serverTLS == nil) {
+		if proxy.serverTLS == nil {
 			proxy.serverTLS = &http.Server{}
 		}
 		listenerTLS, err = server.ListenTLS("tcp", portTLS)
@@ -298,16 +298,16 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 			}
 			transparent := false
 			https := *configHTTPS
-			if permissions != -1 && (s.Mode().Perm() & os.FileMode(permissions)) != os.FileMode(permissions) {
-				os.Chmod(filename, s.Mode().Perm() | os.FileMode(permissions))
+			if permissions != -1 && (s.Mode().Perm()&os.FileMode(permissions)) != os.FileMode(permissions) {
+				os.Chmod(filename, s.Mode().Perm()|os.FileMode(permissions))
 			}
-			proxies[hostname] = &ProxyPair{ server: &http.Server{}}
+			proxies[hostname] = &ProxyPair{server: &http.Server{}}
 			proxy := ProxyConfig{
-				Hostname: hostname,
-				Origin: "unix:" + filename,
-				server: proxies[hostname].server,
-				serverTLS: proxies[hostname].serverTLS,
-				Https: https,
+				Hostname:    hostname,
+				Origin:      "unix:" + filename,
+				server:      proxies[hostname].server,
+				serverTLS:   proxies[hostname].serverTLS,
+				Https:       https,
 				Transparent: transparent,
 			}
 			ovrd_file := filepath.Join(path.Dir(filename), "host.yml")
@@ -326,7 +326,7 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 							log.Printf("%v sets hostname=%s", ovrd_file, val)
 							proxy.Hostname = val
 						}
-						if val, ok := m["mode"]; ok  && val == "grpcs" {
+						if val, ok := m["mode"]; ok && val == "grpcs" {
 							log.Printf("%v sets transparent=true, https=true\n", ovrd_file)
 							proxy.Transparent = true
 							proxy.Https = true
@@ -342,8 +342,8 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 					}
 				}
 			}
-			if https && ! transparent {
-				proxies[hostname].serverTLS =  &http.Server{}
+			if https && !transparent {
+				proxies[hostname].serverTLS = &http.Server{}
 				proxy.serverTLS = proxies[hostname].serverTLS
 			}
 			seen[hostname] = true
@@ -353,15 +353,15 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 	}
 	for hostname, srvrs := range proxies {
 		_, ok := seen[hostname]
-		if (! ok) {
+		if !ok {
 			log.Printf("Shutting down http server %s\n", hostname)
 			if err := srvrs.server.Shutdown(context.Background()); err != nil {
-				    log.Printf("Server shutdown error: %v\n", err)
+				log.Printf("Server shutdown error: %v\n", err)
 			}
 			if srvrs.serverTLS != nil {
 				log.Printf("Shutting down https server %s\n", hostname)
 				if err = srvrs.serverTLS.Shutdown(context.Background()); err != nil {
-					    log.Printf("TLS Server shutdown error: %v\n", err)
+					log.Printf("TLS Server shutdown error: %v\n", err)
 				}
 			}
 			delete(proxies, hostname)
@@ -372,11 +372,11 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor) {
 	for _ = range ch {
 		time.Sleep(time.Duration(delay) * time.Second)
-		Loop:
+	Loop:
 		for {
 			// Clear channel if there were any signals while sleeping
 			select {
-			case _ = <- ch:
+			case _ = <-ch:
 			default:
 				break Loop
 			}
@@ -390,7 +390,7 @@ func networkMonitor(netmon chan NetworkMonitor) {
 	starting := make(map[*local.Client]time.Time)
 	for {
 		select {
-		case nm := <- netmon:
+		case nm := <-netmon:
 			if nm.Alive {
 				// Could also use status->CertDomains here
 				prefs, err := nm.Client.GetPrefs(context.Background())
@@ -448,11 +448,11 @@ func main() {
 	flag.Var(&configIgnore, "ignore", "Ignore service")
 	flag.Parse()
 
-	if (*configProxyFile == "" && *configSocketDir == "" && *configTSName == "") {
+	if *configProxyFile == "" && *configSocketDir == "" && *configTSName == "" {
 		log.Fatal("At least one of -config, -socketdir, or -tsname must be specified")
 	}
 
-	if (*configStateDir == "") {
+	if *configStateDir == "" {
 		defaultDirectory, err := os.UserConfigDir()
 		if err != nil {
 			log.Fatalf("can't find default user config directory: %v", err)
@@ -467,7 +467,7 @@ func main() {
 	var wg sync.WaitGroup
 	netmon := make(chan NetworkMonitor, 20)
 
-	if (*configProxyFile != "") {
+	if *configProxyFile != "" {
 		proxies := parseProxies(*configProxyFile)
 		for _, proxy := range proxies {
 			if slices.Contains(configIgnore, proxy.Hostname) {
@@ -479,19 +479,19 @@ func main() {
 		}
 	}
 
-	if (*configTSName != "") {
+	if *configTSName != "" {
 		wg.Add(1)
 		go func() {
 			createProxy(&wg, ProxyConfig{
-				Hostname: *configTSName,
-				Origin: *configAddress,
+				Hostname:    *configTSName,
+				Origin:      *configAddress,
 				Transparent: *configTransparent,
-				Https: *configHTTPS,
-				},
+				Https:       *configHTTPS,
+			},
 				netmon)
 		}()
 	}
-	if (*configSocketDir != "") {
+	if *configSocketDir != "" {
 		c := make(chan notify.EventInfo, 1)
 		path := *configSocketDir + string(os.PathSeparator) + "..."
 		if err := notify.Watch(path, c, notify.All); err != nil {
@@ -506,7 +506,7 @@ func main() {
 				log.Println("received", ei)
 				select {
 				case scanch <- true: // indicate a change
-				default:  // a change is already indicated, no need to duplicate
+				default: // a change is already indicated, no need to duplicate
 				}
 			}
 		}()
