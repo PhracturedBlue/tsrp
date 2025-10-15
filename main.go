@@ -135,7 +135,7 @@ func transparentProxy(listener net.Listener, url *url.URL) {
 	copyData := func(src, dst net.Conn) {
 		_, err := io.Copy(dst, src)
 		if err != nil {
-			log.Fatalf("Error copying data:", err)
+			log.Printf("Error copying data:", err)
 		}
 	}
 	handleConnection := func(clientConn net.Conn) {
@@ -147,7 +147,7 @@ func transparentProxy(listener net.Listener, url *url.URL) {
 		}
 		targetConn, err := net.Dial(scheme, addr)
 		if err != nil {
-			log.Fatalf("Error dialing target:", err)
+			log.Printf("Error dialing target:", err)
 			return
 		}
 		defer targetConn.Close()
@@ -159,7 +159,7 @@ func transparentProxy(listener net.Listener, url *url.URL) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Fatalf("Error accepting connection:", err)
+			log.Printf("Error accepting connection:", err)
 			continue
 		}
 
@@ -495,7 +495,7 @@ func main() {
 		c := make(chan notify.EventInfo, 1)
 		path := *configSocketDir + string(os.PathSeparator) + "..."
 		if err := notify.Watch(path, c, notify.All); err != nil {
-			log.Fatalf("Failed to create inotify watcher fro %v: %v", path, err)
+			log.Fatalf("Failed to create inotify watcher for %v: %v", path, err)
 		}
 		defer notify.Stop(c)
 		ScanSockets(&wg, socketproxies, netmon) // scan once to find existing sockets
