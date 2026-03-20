@@ -168,7 +168,7 @@ func transparentProxy(listener net.Listener, url *url.URL) {
 
 }
 
-func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonitor) error {
+func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonitor, tsAuthKey string) error {
 	defer wg.Done()
 	if proxy.server == nil {
 		proxy.server = &http.Server{}
@@ -188,6 +188,13 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonit
 	server := &tsnet.Server{
 		Hostname: proxy.Hostname,
 		Dir:      stateDir,
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "tailscaled.state")); err != nil {
+		// Only try to use the AuthKey if there is no state file
+		// Despite the docs, an expired authKey seems to take precedence over the
+		// state file, resulting in failed connection with:
+		// Authkey is set; but state is NoState
+		server.AuthKey = tsAuthKey
 	}
 
 	defer server.Close()
@@ -268,7 +275,7 @@ func createProxy(wg *sync.WaitGroup, proxy ProxyConfig, netmon chan NetworkMonit
 	return err
 }
 
-func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor) {
+func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor, tsAuthKey string) {
 	log.Println("Scanning...")
 	defer log.Println("Scanning complete")
 	permissions := *configSocketPerm
@@ -348,7 +355,7 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 			}
 			seen[hostname] = true
 			wg.Add(1)
-			go createProxy(wg, proxy, netmon)
+			go createProxy(wg, proxy, netmon, tsAuthKey)
 		}
 	}
 	for hostname, srvrs := range proxies {
@@ -369,7 +376,7 @@ func ScanSockets(wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan 
 	}
 }
 
-func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor) {
+func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair, netmon chan NetworkMonitor, tsAuthKey string) {
 	for _ = range ch {
 		time.Sleep(time.Duration(delay) * time.Second)
 	Loop:
@@ -381,7 +388,7 @@ func ScanMonitor(ch chan bool, wg *sync.WaitGroup, proxies map[string]*ProxyPair
 				break Loop
 			}
 		}
-		ScanSockets(wg, proxies, netmon)
+		ScanSockets(wg, proxies, netmon, tsAuthKey)
 	}
 }
 
@@ -463,6 +470,8 @@ func main() {
 	if err != nil {
 		log.Print("Could not read .env file")
 	}
+	tsAuthKey := os.Getenv("TS_AUTHKEY")
+	os.Unsetenv("TS_AUTHKEY")
 
 	var wg sync.WaitGroup
 	netmon := make(chan NetworkMonitor, 20)
@@ -475,7 +484,7 @@ func main() {
 				continue
 			}
 			wg.Add(1)
-			go createProxy(&wg, proxy, netmon)
+			go createProxy(&wg, proxy, netmon, tsAuthKey)
 		}
 	}
 
@@ -488,7 +497,7 @@ func main() {
 				Transparent: *configTransparent,
 				Https:       *configHTTPS,
 			},
-				netmon)
+				netmon, tsAuthKey)
 		}()
 	}
 	if *configSocketDir != "" {
@@ -498,9 +507,9 @@ func main() {
 			log.Fatalf("Failed to create inotify watcher for %v: %v", path, err)
 		}
 		defer notify.Stop(c)
-		ScanSockets(&wg, socketproxies, netmon) // scan once to find existing sockets
+		ScanSockets(&wg, socketproxies, netmon, tsAuthKey) // scan once to find existing sockets
 		scanch := make(chan bool, 1)
-		go ScanMonitor(scanch, &wg, socketproxies, netmon)
+		go ScanMonitor(scanch, &wg, socketproxies, netmon, tsAuthKey)
 		go func() {
 			for ei := range c {
 				log.Println("received", ei)
